@@ -1,0 +1,44 @@
+name: Atlas - Sincronizacao Bling em nuvem
+
+# Disparado de duas formas:
+#   1) Pelo proprio botao "Atualizar agora" do Atlas, via chamada de API do
+#      GitHub feita pelo Worker (workflow_dispatch com o job_id) -- e' assim
+#      que o clique funciona de qualquer computador/celular, sem depender
+#      de nenhuma maquina ligada.
+#   2) No horario fixo abaixo, como rede de seguranca (cron), caso ninguem
+#      clique no botao por um tempo. Ajuste ou apague conforme a necessidade.
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "ID do job criado pelo Atlas (deixe em branco pra testar manualmente)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 */4 * * *"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: Rodar sincronizacao Bling -> Atlas
+        env:
+          BLING_CLIENT_ID: ${{ secrets.BLING_CLIENT_ID }}
+          BLING_CLIENT_SECRET: ${{ secrets.BLING_CLIENT_SECRET }}
+          BLING_BASE_URL: ${{ secrets.BLING_BASE_URL }}
+          AGM_SITE_SYNC_KEY: ${{ secrets.AGM_SITE_SYNC_KEY }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          AGM_SITE_URL: ${{ secrets.AGM_SITE_URL }}
+          TOKEN_STORE: cloud
+          JOB_ID: ${{ github.event.inputs.job_id }}
+        run: python run_cloud_sync.py
