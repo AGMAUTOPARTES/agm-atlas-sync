@@ -31,23 +31,46 @@ CF_ID = os.environ.get("CF_ACCESS_CLIENT_ID", "").strip()
 CF_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET", "").strip()
 JOB_ID = os.environ.get("JOB_ID", "").strip()
 
-# Mesma lista de modulos "rapidos" que o refresh_bling.ps1 usa no clique
-# padrao do botao -- cadastros auxiliares e financeiro ficam de fora pra
-# nao gastar requisicoes sem necessidade.
-FAST_MODULES = "categorias,situacoes,produtos,estoques_depositos,contatos,pedidos_venda,pedidos_compra,notas_entrada"
-
-# Janela usada em toda sincronizacao na nuvem. Os modulos "janela" do
-# sync_bling.py (pedidos_compra, notas_entrada, etc) ja caem sozinhos pra 7
-# dias quando nao ha estado salvo -- mas produtos/contatos/pedidos_venda
-# ("alteracao") nao tem esse fallback: sem estado, eles puxam o HISTORICO
-# INTEIRO a cada run, porque aqui na nuvem nunca existe sync_state.json de
-# uma execucao anterior (cada job do GitHub Actions comeca do zero). Passar
-# --desde explicitamente cobre os tres tambem, deixando toda sincronizacao
-# incremental na nuvem restrita aos ultimos N dias -- o que reduz bastante
-# o tempo de execucao. Se o Atlas ficar mais de LOOKBACK_DAYS dias sem
-# sincronizar, rode manualmente "python sync_bling.py --reconcile" (janela
-# de 120 dias) pra reconferir o que passou batido.
-LOOKBACK_DAYS = 7
+# IMPORTANTE (01/09/2026): por que nao existe mais uma unica janela --desde
+# global pra todo mundo, como tinha ate hoje de manha.
+#
+# Cada job do GitHub Actions comeca numa maquina ZERADA -- nao existe CSV de
+# uma execucao anterior. O sync_bling.py tem um modo "upsert" (usado no
+# --incremental) que MESCLA o que mudou com o CSV que ja existe no disco;
+# no agente local isso funciona porque o CSV vai acumulando de sync em sync.
+# Na nuvem nao ha o que mesclar -- "CSV existente (vazio) + o que mudou nos
+# ultimos N dias" vira, na pratica, SO "o que mudou nos ultimos N dias". E
+# como a publicacao no Atlas e um snapshot completo (substitui a base
+# inteira), qualquer produto/pedido que nao mudou dentro da janela some do
+# Atlas -- nao fica desatualizado, DESAPARECE. Foi o que aconteceu com a
+# janela de 7 dias: so vieram os ~1000 produtos alterados na semana, e o
+# resto do catalogo foi apagado da base publicada.
+#
+# A correcao: os modulos abaixo rodam em modo --full (sobrescreve, nunca
+# mescla) em vez de --incremental (mescla/upsert), agrupados por
+# necessidade real:
+#
+#   CADASTRO_MODULES -- produtos e contatos. Jonas quer sempre o cadastro
+#   INTEIRO do Bling, entao rodam --full SEM --desde (sem limite de data
+#   nenhum). estoques_depositos e categorias/situacoes tambem sempre foram
+#   completos (nao tem filtro de data).
+#
+#   METRICAS_MODULES -- pedidos_venda e notas_entrada. Afetam faturamento,
+#   dias sem vender, etc no Atlas (que so usa ate 90 dias de janela nos
+#   calculos). Rodam --full com --desde de METRICAS_LOOKBACK_DAYS (120 dias,
+#   30 de folga sobre o maior calculo do Atlas) em vez de sem limite
+#   nenhum, senao seria puxar o historico inteiro de vendas da empresa a
+#   cada execucao -- correto, mas provavelmente muito mais lento do que
+#   precisa ser pra alimentar metricas de 90 dias.
+#
+#   pedidos_compra -- Jonas nao usa mais esse modulo no Bling (poucos
+#   registros, so teste); vai passar a montar pedido de compra direto no
+#   Atlas. Continua rodando --incremental sem --desde (cai no padrao interno
+#   de 90 dias do sync_bling.py), exatamente como rodava antes de hoje.
+CADASTRO_MODULES = "categorias,situacoes,produtos,estoques_depositos,contatos"
+METRICAS_MODULES = "pedidos_venda,notas_entrada"
+METRICAS_LOOKBACK_DAYS = 120
+PEDIDOS_COMPRA_MODULES = "pedidos_compra"
 
 HEADERS = {
     "x-agm-sync-key": SYNC_KEY,
@@ -109,11 +132,25 @@ def main():
         )
     try:
         claim()
-        desde = (dt.date.today() - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+
         run_step(
-            ["sync_bling.py", "--incremental", "--modulos", FAST_MODULES, "--desde", desde],
-            "bling", 10, "Sincronizando dados do Bling",
+            ["sync_bling.py", "--full", "--modulos", CADASTRO_MODULES],
+            "bling", 5, "Sincronizando catalogo completo (produtos e contatos)",
         )
+
+        desde_metricas = (
+            dt.date.today() - dt.timedelta(days=METRICAS_LOOKBACK_DAYS)
+        ).strftime("%Y-%m-%d")
+        run_step(
+            ["sync_bling.py", "--full", "--modulos", METRICAS_MODULES, "--desde", desde_metricas],
+            "bling", 45, "Sincronizando vendas e notas de entrada (120 dias)",
+        )
+
+        run_step(
+            ["sync_bling.py", "--incremental", "--modulos", PEDIDOS_COMPRA_MODULES],
+            "bling", 70, "Sincronizando pedidos de compra",
+        )
+
         run_step(
             ["gerar_sugestao_compras.py"], "calculations", 82,
             "Dados do Bling recebidos; recalculando a inteligencia de compras",
