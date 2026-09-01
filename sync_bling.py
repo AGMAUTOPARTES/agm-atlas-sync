@@ -53,7 +53,7 @@ STATUS_FILE = DATA_DIR / "SYNC_STATUS.json"
 
 DATA_DIR.mkdir(exist_ok=True)
 
-QUICK_LOOKBACK_DAYS = 7
+QUICK_LOOKBACK_DAYS = 90
 RECONCILE_LOOKBACK_DAYS = 120
 
 
@@ -859,7 +859,7 @@ def compute_since(modo_filtro, modulo, state, modo_execucao, desde_cli):
                 return (dt.date.fromisoformat(anterior) - dt.timedelta(days=2)).strftime("%Y-%m-%d")
             except ValueError:
                 pass
-        return anterior
+        return (dt.date.today() - dt.timedelta(days=QUICK_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     if modo_filtro == "janela":
         anterior = state.get(modulo)
         if anterior:
