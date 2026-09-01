@@ -43,6 +43,22 @@ HEADERS = {
 }
 
 
+def claim():
+    """Reivindica o job no Atlas (GET, o mesmo que o agente local faz a
+    cada 30s) -- e o unico jeito de mover o status do job de 'requested'
+    para 'running' no D1. Sem isso, os POSTs de progresso do report()
+    abaixo falham calados (o endpoint so aceita atualizar um job que ja
+    esta 'running'), o job fica preso em 'requested', e o watchdog do
+    /api/refresh acaba marcando como 'failed' mesmo com a sincronizacao
+    rodando normalmente aqui no GitHub Actions."""
+    if not JOB_ID:
+        return
+    try:
+        requests.get(SITE_URL + "/api/refresh/agent", headers=HEADERS, timeout=20)
+    except requests.RequestException as exc:
+        print(f"  aviso: falha ao reivindicar job no Atlas: {exc}")
+
+
 def report(status, phase, progress, message):
     print(f"[{phase}] {progress}% - {message}")
     if not JOB_ID:
@@ -78,6 +94,7 @@ def main():
             "CF_ACCESS_CLIENT_SECRET nos Secrets do repositorio no GitHub."
         )
     try:
+        claim()
         run_step(
             ["sync_bling.py", "--incremental", "--modulos", FAST_MODULES],
             "bling", 10, "Sincronizando dados do Bling",
