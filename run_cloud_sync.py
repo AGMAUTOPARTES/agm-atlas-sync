@@ -16,6 +16,7 @@ Definidas pelo proprio workflow (nao sao segredo):
   JOB_ID                (id do job criado pelo Atlas; vazio = teste manual,
                           roda a sincronizacao mas nao reporta heartbeat)
 """
+import datetime as dt
 import os
 import subprocess
 import sys
@@ -34,6 +35,19 @@ JOB_ID = os.environ.get("JOB_ID", "").strip()
 # padrao do botao -- cadastros auxiliares e financeiro ficam de fora pra
 # nao gastar requisicoes sem necessidade.
 FAST_MODULES = "categorias,situacoes,produtos,estoques_depositos,contatos,pedidos_venda,pedidos_compra,notas_entrada"
+
+# Janela usada em toda sincronizacao na nuvem. Os modulos "janela" do
+# sync_bling.py (pedidos_compra, notas_entrada, etc) ja caem sozinhos pra 7
+# dias quando nao ha estado salvo -- mas produtos/contatos/pedidos_venda
+# ("alteracao") nao tem esse fallback: sem estado, eles puxam o HISTORICO
+# INTEIRO a cada run, porque aqui na nuvem nunca existe sync_state.json de
+# uma execucao anterior (cada job do GitHub Actions comeca do zero). Passar
+# --desde explicitamente cobre os tres tambem, deixando toda sincronizacao
+# incremental na nuvem restrita aos ultimos N dias -- o que reduz bastante
+# o tempo de execucao. Se o Atlas ficar mais de LOOKBACK_DAYS dias sem
+# sincronizar, rode manualmente "python sync_bling.py --reconcile" (janela
+# de 120 dias) pra reconferir o que passou batido.
+LOOKBACK_DAYS = 7
 
 HEADERS = {
     "x-agm-sync-key": SYNC_KEY,
@@ -95,8 +109,9 @@ def main():
         )
     try:
         claim()
+        desde = (dt.date.today() - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
         run_step(
-            ["sync_bling.py", "--incremental", "--modulos", FAST_MODULES],
+            ["sync_bling.py", "--incremental", "--modulos", FAST_MODULES, "--desde", desde],
             "bling", 10, "Sincronizando dados do Bling",
         )
         run_step(
