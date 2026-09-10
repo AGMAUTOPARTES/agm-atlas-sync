@@ -1,12 +1,17 @@
 name: Atlas - Sincronizacao Bling em nuvem
 
-# Disparado de duas formas:
-#   1) Pelo proprio botao "Atualizar agora" do Atlas, via chamada de API do
-#      GitHub feita pelo Worker (workflow_dispatch com o job_id) -- e' assim
-#      que o clique funciona de qualquer computador/celular, sem depender
-#      de nenhuma maquina ligada.
-#   2) No horario fixo abaixo, como rede de seguranca (cron), caso ninguem
-#      clique no botao por um tempo. Ajuste ou apague conforme a necessidade.
+# Disparado exclusivamente pelo botao do Atlas ("Atualizar agora" /
+# "Atualizar por período/módulos"), via chamada de API do GitHub feita pelo
+# Worker (workflow_dispatch com o job_id, os modulos e o periodo
+# escolhidos) -- e' assim que o clique funciona de qualquer
+# computador/celular, sem depender de nenhuma maquina ligada.
+#
+# O cron automatico (rodava sozinho de 4 em 4 horas) foi DESLIGADO em
+# 10/09/2026 a pedido do Jonas: ele estava perto de estourar a cota
+# gratuita de minutos do GitHub Actions porque cada run fazia sync
+# completo do catalogo inteiro, sempre. Agora e' 100% sob demanda, e da
+# pra escolher so os modulos que interessam (ver input "modules" abaixo).
+# Pra reativar o cron automatico, descomente o bloco "schedule:".
 on:
   workflow_dispatch:
     inputs:
@@ -14,8 +19,20 @@ on:
         description: "ID do job criado pelo Atlas (deixe em branco pra testar manualmente)"
         required: false
         default: ""
-  schedule:
-    - cron: "0 */4 * * *"
+      modules:
+        description: "Modulos a sincronizar, separados por virgula (vazio = todos). Opcoes: categorias,situacoes,produtos,estoques_depositos,contatos,pedidos_venda,notas_entrada,pedidos_compra"
+        required: false
+        default: ""
+      period_start:
+        description: "Data inicial AAAA-MM-DD (so afeta pedidos_venda/notas_entrada; vazio = ultimos 120 dias)"
+        required: false
+        default: ""
+      period_end:
+        description: "Data final AAAA-MM-DD (so afeta pedidos_venda/notas_entrada; vazio = hoje)"
+        required: false
+        default: ""
+  # schedule:
+  #   - cron: "0 */4 * * *"
 
 concurrency:
   group: atlas-sync
@@ -44,4 +61,7 @@ jobs:
           AGM_SITE_URL: ${{ secrets.AGM_SITE_URL }}
           TOKEN_STORE: cloud
           JOB_ID: ${{ github.event.inputs.job_id }}
+          MODULES: ${{ github.event.inputs.modules }}
+          PERIOD_START: ${{ github.event.inputs.period_start }}
+          PERIOD_END: ${{ github.event.inputs.period_end }}
         run: python run_cloud_sync.py
