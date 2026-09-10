@@ -7,14 +7,40 @@ Atlas continuam funcionando identico, sem precisar mudar nada no frontend.
 
 Variaveis de ambiente esperadas (definidas como Secrets do repositorio no
 GitHub -- ver README_CONFIGURACAO.md):
-  BLING_CLIENT_ID, BLING_CLIENT_SECRET, BLING_BASE_URL
-  AGM_SITE_SYNC_KEY, CF_ACCESS_CLIENT_ID, CF_ACCESS_CLIENT_SECRET
-  AGM_SITE_URL          (opcional, ja tem um padrao)
+BLING_CLIENT_ID, BLING_CLIENT_SECRET, BLING_BASE_URL
+AGM_SITE_SYNC_KEY, CF_ACCESS_CLIENT_ID, CF_ACCESS_CLIENT_SECRET
+AGM_SITE_URL (opcional, ja tem um padrao)
 
 Definidas pelo proprio workflow (nao sao segredo):
-  TOKEN_STORE=cloud     (faz o bling_auth.py usar o D1 em vez de arquivo local)
-  JOB_ID                (id do job criado pelo Atlas; vazio = teste manual,
-                          roda a sincronizacao mas nao reporta heartbeat)
+TOKEN_STORE=cloud (faz o bling_auth.py usar o D1 em vez de arquivo local)
+JOB_ID (id do job criado pelo Atlas; vazio = teste manual,
+roda a sincronizacao mas nao reporta heartbeat)
+
+Novo em 10/09/2026 (a pedido do Jonas, depois de descobrir que o cron
+automatico de 4 em 4 horas estava perto de estourar a cota gratuita do
+GitHub Actions -- ver conversa no Atlas): o cron foi DESLIGADO. A partir
+de agora toda sincronizacao e' sob demanda, disparada pelo botao do Atlas,
+e o Jonas escolhe (opcionalmente) QUAIS modulos quer atualizar -- em vez
+de sempre puxar o catalogo inteiro (que e' o que demora ~50min sozinho).
+
+MODULES (opcional): lista de modulos separados por virgula, usando os
+mesmos nomes do sync_bling.py:
+  categorias, situacoes, produtos, estoques_depositos, contatos,
+  pedidos_venda, notas_entrada, pedidos_compra
+Vazio/nao definido = todos os modulos (comportamento antigo, sync completo).
+
+PERIOD_START / PERIOD_END (opcional, "AAAA-MM-DD"): so afetam os modulos
+com filtro de data (pedidos_venda, notas_entrada). Sem eles, cai no padrao
+de METRICAS_LOOKBACK_DAYS dias pra tras, ate hoje.
+
+IMPORTANTE -- por que cada modulo tem uma "classe de seguranca" fixa (full
+sem data, full com janela, ou incremental) que o Jonas NAO escolhe: isso
+foi decidido em 01/09/2026 depois de um bug real onde sincronizar
+incremental num runner "zerado" (sem o CSV de execucoes anteriores) fazia
+produto que nao mudou na janela SUMIR do Atlas em vez de so ficar
+desatualizado. Deixar o modulo escolher a classe de novo reabriria esse
+risco -- por isso a classe de cada modulo e' fixa aqui embaixo, e so a
+LISTA de modulos e' que e' escolhida pelo Jonas.
 """
 import datetime as dt
 import os
@@ -31,46 +57,25 @@ CF_ID = os.environ.get("CF_ACCESS_CLIENT_ID", "").strip()
 CF_SECRET = os.environ.get("CF_ACCESS_CLIENT_SECRET", "").strip()
 JOB_ID = os.environ.get("JOB_ID", "").strip()
 
-# IMPORTANTE (01/09/2026): por que nao existe mais uma unica janela --desde
-# global pra todo mundo, como tinha ate hoje de manha.
-#
-# Cada job do GitHub Actions comeca numa maquina ZERADA -- nao existe CSV de
-# uma execucao anterior. O sync_bling.py tem um modo "upsert" (usado no
-# --incremental) que MESCLA o que mudou com o CSV que ja existe no disco;
-# no agente local isso funciona porque o CSV vai acumulando de sync em sync.
-# Na nuvem nao ha o que mesclar -- "CSV existente (vazio) + o que mudou nos
-# ultimos N dias" vira, na pratica, SO "o que mudou nos ultimos N dias". E
-# como a publicacao no Atlas e um snapshot completo (substitui a base
-# inteira), qualquer produto/pedido que nao mudou dentro da janela some do
-# Atlas -- nao fica desatualizado, DESAPARECE. Foi o que aconteceu com a
-# janela de 7 dias: so vieram os ~1000 produtos alterados na semana, e o
-# resto do catalogo foi apagado da base publicada.
-#
-# A correcao: os modulos abaixo rodam em modo --full (sobrescreve, nunca
-# mescla) em vez de --incremental (mescla/upsert), agrupados por
-# necessidade real:
-#
-#   CADASTRO_MODULES -- produtos e contatos. Jonas quer sempre o cadastro
-#   INTEIRO do Bling, entao rodam --full SEM --desde (sem limite de data
-#   nenhum). estoques_depositos e categorias/situacoes tambem sempre foram
-#   completos (nao tem filtro de data).
-#
-#   METRICAS_MODULES -- pedidos_venda e notas_entrada. Afetam faturamento,
-#   dias sem vender, etc no Atlas (que so usa ate 90 dias de janela nos
-#   calculos). Rodam --full com --desde de METRICAS_LOOKBACK_DAYS (120 dias,
-#   30 de folga sobre o maior calculo do Atlas) em vez de sem limite
-#   nenhum, senao seria puxar o historico inteiro de vendas da empresa a
-#   cada execucao -- correto, mas provavelmente muito mais lento do que
-#   precisa ser pra alimentar metricas de 90 dias.
-#
-#   pedidos_compra -- Jonas nao usa mais esse modulo no Bling (poucos
-#   registros, so teste); vai passar a montar pedido de compra direto no
-#   Atlas. Continua rodando --incremental sem --desde (cai no padrao interno
-#   de 90 dias do sync_bling.py), exatamente como rodava antes de hoje.
-CADASTRO_MODULES = "categorias,situacoes,produtos,estoques_depositos,contatos"
-METRICAS_MODULES = "pedidos_venda,notas_entrada"
+# Classe de seguranca de cada modulo (nao mexer sem entender o comentario
+# grande acima): "full_nodate" roda --full sem --desde (cadastro inteiro,
+# sempre); "full_windowed" roda --full com --desde (snapshot completo, mas
+# so dos ultimos N dias, pra nao puxar o historico inteiro de vendas toda
+# vez); "incremental" roda --incremental (mescla com o que ja tem -- unico
+# modulo onde isso e' seguro hoje, porque o Jonas praticamente nao usa mais
+# esse cadastro no Bling).
+MODULE_CLASS = {
+    "categorias": "full_nodate",
+    "situacoes": "full_nodate",
+    "produtos": "full_nodate",
+    "estoques_depositos": "full_nodate",
+    "contatos": "full_nodate",
+    "pedidos_venda": "full_windowed",
+    "notas_entrada": "full_windowed",
+    "pedidos_compra": "incremental",
+}
+ALL_MODULES = list(MODULE_CLASS.keys())
 METRICAS_LOOKBACK_DAYS = 120
-PEDIDOS_COMPRA_MODULES = "pedidos_compra"
 
 HEADERS = {
     "x-agm-sync-key": SYNC_KEY,
@@ -78,6 +83,41 @@ HEADERS = {
     "CF-Access-Client-Secret": CF_SECRET,
     "Content-Type": "application/json",
 }
+
+
+def parse_modules():
+    """Le MODULES do ambiente. Vazio ou ausente = todos os modulos (mesmo
+    comportamento de sempre). Nomes desconhecidos sao ignorados (com aviso)
+    em vez de quebrar a sincronizacao inteira por um erro de digitacao."""
+    raw = os.environ.get("MODULES", "").strip()
+    if not raw:
+        return list(ALL_MODULES)
+    requested, unknown = [], []
+    for name in raw.split(","):
+        name = name.strip()
+        if not name:
+            continue
+        if name in MODULE_CLASS:
+            if name not in requested:
+                requested.append(name)
+        else:
+            unknown.append(name)
+    if unknown:
+        print(f" aviso: modulo(s) desconhecido(s) ignorado(s): {', '.join(unknown)}")
+    return requested or list(ALL_MODULES)
+
+
+def build_plan(requested_modules):
+    """Agrupa os modulos pedidos por classe de seguranca, preservando a
+    ordem de MODULE_CLASS, e devolve uma lista de passos
+    (classe, [modulos]) so com as classes que tem pelo menos 1 modulo
+    pedido."""
+    by_class: dict[str, list[str]] = {}
+    for module in ALL_MODULES:
+        if module in requested_modules:
+            by_class.setdefault(MODULE_CLASS[module], []).append(module)
+    order = ["full_nodate", "full_windowed", "incremental"]
+    return [(cls, by_class[cls]) for cls in order if by_class.get(cls)]
 
 
 def claim():
@@ -93,7 +133,7 @@ def claim():
     try:
         requests.get(SITE_URL + "/api/refresh/agent", headers=HEADERS, timeout=20)
     except requests.RequestException as exc:
-        print(f"  aviso: falha ao reivindicar job no Atlas: {exc}")
+        print(f" aviso: falha ao reivindicar job no Atlas: {exc}")
 
 
 def report(status, phase, progress, message):
@@ -114,7 +154,7 @@ def report(status, phase, progress, message):
             timeout=20,
         )
     except requests.RequestException as exc:
-        print(f"  aviso: falha ao reportar progresso pro Atlas: {exc}")
+        print(f" aviso: falha ao reportar progresso pro Atlas: {exc}")
 
 
 def run_step(args, phase, progress, message):
@@ -130,33 +170,62 @@ def main():
             "Faltam AGM_SITE_SYNC_KEY / CF_ACCESS_CLIENT_ID / "
             "CF_ACCESS_CLIENT_SECRET nos Secrets do repositorio no GitHub."
         )
+
+    requested_modules = parse_modules()
+    plan = build_plan(requested_modules)
+    if not plan:
+        sys.exit(f"Nenhum modulo valido em MODULES={os.environ.get('MODULES', '')!r}.")
+
+    period_start = os.environ.get("PERIOD_START", "").strip()
+    period_end = os.environ.get("PERIOD_END", "").strip()
+    desde_padrao = (dt.date.today() - dt.timedelta(days=METRICAS_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+
+    labels = {
+        "full_nodate": "cadastro completo",
+        "full_windowed": "vendas/notas de entrada",
+        "incremental": "pedidos de compra",
+    }
+    print(f"=== AGM - Sync Bling API v3 (sob demanda) - {dt.datetime.now():%d/%m/%Y %H:%M} ===")
+    print(f"Modulos pedidos: {', '.join(requested_modules)}")
+    plan_descriptions = [f"{labels[cls]} ({','.join(mods)})" for cls, mods in plan]
+    print(f"Plano: {' | '.join(plan_descriptions)}")
+
     try:
         claim()
 
-        run_step(
-            ["sync_bling.py", "--full", "--modulos", CADASTRO_MODULES],
-            "bling", 5, "Sincronizando catalogo completo (produtos e contatos)",
-        )
+        n_steps = len(plan)
+        # 5% pra abrir, ate 90% distribuido entre os passos do Bling, resto
+        # (90-100%) pros calculos + publicacao no final.
+        progress_points = [5 + round(85 * (i + 1) / n_steps) for i in range(n_steps)]
 
-        desde_metricas = (
-            dt.date.today() - dt.timedelta(days=METRICAS_LOOKBACK_DAYS)
-        ).strftime("%Y-%m-%d")
-        run_step(
-            ["sync_bling.py", "--full", "--modulos", METRICAS_MODULES, "--desde", desde_metricas],
-            "bling", 45, "Sincronizando vendas e notas de entrada (120 dias)",
-        )
+        for (cls, modules), progress in zip(plan, progress_points):
+            modulos_str = ",".join(modules)
+            if cls == "full_nodate":
+                run_step(
+                    ["sync_bling.py", "--full", "--modulos", modulos_str],
+                    "bling", progress, f"Sincronizando {labels[cls]} ({modulos_str})",
+                )
+            elif cls == "full_windowed":
+                args = ["sync_bling.py", "--full", "--modulos", modulos_str,
+                        "--desde", period_start or desde_padrao]
+                if period_end:
+                    args += ["--ate", period_end]
+                run_step(
+                    args, "bling", progress,
+                    f"Sincronizando {labels[cls]} ({modulos_str}, desde {period_start or desde_padrao})",
+                )
+            else:  # incremental
+                run_step(
+                    ["sync_bling.py", "--incremental", "--modulos", modulos_str],
+                    "bling", progress, f"Sincronizando {labels[cls]} ({modulos_str})",
+                )
 
         run_step(
-            ["sync_bling.py", "--incremental", "--modulos", PEDIDOS_COMPRA_MODULES],
-            "bling", 70, "Sincronizando pedidos de compra",
-        )
-
-        run_step(
-            ["gerar_sugestao_compras.py"], "calculations", 82,
+            ["gerar_sugestao_compras.py"], "calculations", 93,
             "Dados do Bling recebidos; recalculando a inteligencia de compras",
         )
         run_step(
-            ["publicar_agm_site.py"], "publishing", 92,
+            ["publicar_agm_site.py"], "publishing", 97,
             "Inteligencia recalculada; publicando a nova base no ATLAS",
         )
         report("complete", "complete", 100, "Nova base publicada no ATLAS")
