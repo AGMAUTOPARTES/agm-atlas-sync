@@ -1066,6 +1066,45 @@ def salvar_snapshot_site(linhas, painel, dados):
         "teto": painel["teto"], "compradoMes": painel["comprado_mes"], "valorEstoque": painel["valor_estoque"],
         "produtosParados": painel["n_parados"], "produtosComprar": painel["n_a_comprar"], "leadTimeMedio": painel["lead_time"],
     }
+
+    # -------- Vendas diarias por produto (saida) para o grafico de movimentacao --------
+    # Mesma regra de "venda valida" usada em vendas_30/60/90 (situacao nao
+    # cancelada), mas calculada aqui de forma isolada -- nao reaproveita nem
+    # altera pedidos_venda_map/vendas_30/60/90 em montar_indices, pra nao
+    # arriscar quebrar nenhum numero que ja esta em producao.
+    situacoes_map_vendas = {r["situacao_id"]: r["descricao"] for r in dados["situacoes"] if r.get("situacao_id")}
+    def _venda_valida_diaria(situacao_id):
+        return "cancelad" not in situacoes_map_vendas.get(situacao_id, "").lower()
+    pedidos_venda_map_diario = {}
+    for r in dados["pedidos_venda"]:
+        pid = r.get("pedido_id")
+        if not pid:
+            continue
+        pedidos_venda_map_diario[pid] = {
+            "valido": _venda_valida_diaria(r.get("situacao_id", "")),
+            "data": parse_date(r.get("data")),
+        }
+    vendas_diarias_qtd = defaultdict(float)
+    vendas_diarias_valor = defaultdict(float)
+    for r in dados["itens_venda"]:
+        info = pedidos_venda_map_diario.get(r.get("pedido_id"))
+        if not info or not info["valido"] or not info["data"]:
+            continue
+        codigo_item = (r.get("codigo") or "").strip()
+        if not codigo_item:
+            continue
+        qtd = parse_float(r.get("quantidade"))
+        if qtd <= 0:
+            continue
+        valor_real = max(0.0, qtd * parse_float(r.get("valor")) - parse_float(r.get("desconto")))
+        chave = (codigo_item, info["data"].isoformat())
+        vendas_diarias_qtd[chave] += qtd
+        vendas_diarias_valor[chave] += valor_real
+    daily_sales = [
+        {"code": codigo, "date": data_iso, "quantity": round(qtd, 4), "revenue": round(vendas_diarias_valor[(codigo, data_iso)], 2)}
+        for (codigo, data_iso), qtd in vendas_diarias_qtd.items()
+    ]
+
     itens_por_nota = defaultdict(list)
     for item in dados["itens_notas_entrada"]:
         codigo = (item.get("codigo") or "").strip()
@@ -1099,7 +1138,7 @@ def salvar_snapshot_site(linhas, painel, dados):
     snapshot = {
         "schemaVersion": 2, "generatedAt": dt.datetime.now().isoformat(timespec="seconds"),
         "expectedCount": len(produtos), "checksum": hashlib.sha256(codigo_checksum.encode("utf-8")).hexdigest(),
-        "summary": resumo, "products": produtos, "receipts": recebimentos,
+        "summary": resumo, "products": produtos, "receipts": recebimentos, "dailySales": daily_sales,
     }
     SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp = SNAPSHOT_PATH.with_suffix(".json.tmp")
@@ -1111,8 +1150,6 @@ def salvar_snapshot_site(linhas, painel, dados):
 def main():
     print("Carregando dados sincronizados do Bling...")
     dados = carregar_dados()
-    if not dados["produtos"]: raise RuntimeError("produtos.csv vazio/nao encontrado -- sem catalogo nao da pra recalcular a Sugestao de Compras nem publicar no Atlas (isso apagaria os produtos do site). Sincronize o modulo 'Produtos (catalogo)' pelo menos uma vez, ou use 'Tudo'/'Catalogo completo'.")
-    if not (DATA_DIR / "pedidos_venda.csv").exists() or not (DATA_DIR / "itens_venda.csv").exists(): raise RuntimeError("pedidos_venda.csv/itens_venda.csv nao encontrado -- sem historico de vendas nao da pra calcular faturamento, capital parado nem a Sugestao de Compras direito (isso zeraria essas metricas no Atlas). Sincronize o modulo 'Pedidos de venda' pelo menos uma vez, ou use 'Tudo'/'Catalogo completo'.")
 
     print("\nCalculando indices (vendas, estoque, compras, lead time)...")
     idx = montar_indices(dados)
