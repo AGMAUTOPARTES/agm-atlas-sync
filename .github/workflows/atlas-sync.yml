@@ -36,13 +36,21 @@ on:
 
 concurrency:
   group: atlas-sync
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+
+      - name: Restaurar catalogo da ultima sincronizacao (produtos, estoque, contatos, etc.)
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: agm-atlas-data-${{ github.run_id }}
+          restore-keys: |
+            agm-atlas-data-
 
       - uses: actions/setup-python@v5
         with:
