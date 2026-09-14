@@ -165,6 +165,18 @@ def main():
         print("  Entradas processadas: "+str(min(start+len(batch),len(receipts)))+"/"+str(len(receipts)))
     if receipts:
         print("  Notas de entrada interpretadas: "+str(len(receipts)))
+    daily_sales=snapshot.get("dailySales") or []
+    # Mesma logica de lotes das entradas: manda em pedacos pra cada chamada
+    # ao Worker ficar curta. Vendas diarias sao so leitura+upsert (sem cruzar
+    # pedidos em aberto como as entradas fazem), entao um lote maior cabe sem
+    # estourar o tempo do Worker.
+    daily_sales_batch_size=500
+    for start in range(0,len(daily_sales),daily_sales_batch_size):
+        batch=daily_sales[start:start+daily_sales_batch_size]
+        post({"action":"dailySales","entries":batch})
+        print("  Vendas diarias enviadas: "+str(min(start+len(batch),len(daily_sales)))+"/"+str(len(daily_sales)))
+    if daily_sales:
+        print("  Dias com venda registrados: "+str(len(daily_sales)))
     print("OK - ATLAS atualizado com "+str(result.get("publishedCount"))+" produtos em "+str(result.get("updatedAt")))
 
 if __name__=="__main__": main()
