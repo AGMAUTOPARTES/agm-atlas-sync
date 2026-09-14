@@ -1125,7 +1125,7 @@ def salvar_snapshot_site(linhas, painel, dados):
         if not info or not info["valido"] or not info["data"]:
             continue
         codigo_item = _resolver_codigo_atual_diario(r)
-      if not codigo_item:
+        if not codigo_item:
             continue
         qtd = parse_float(r.get("quantidade"))
         if qtd <= 0:
