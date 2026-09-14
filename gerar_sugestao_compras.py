@@ -1112,6 +1112,7 @@ def main():
     print("Carregando dados sincronizados do Bling...")
     dados = carregar_dados()
     if not dados["produtos"]: raise RuntimeError("produtos.csv vazio/nao encontrado -- sem catalogo nao da pra recalcular a Sugestao de Compras nem publicar no Atlas (isso apagaria os produtos do site). Sincronize o modulo 'Produtos (catalogo)' pelo menos uma vez, ou use 'Tudo'/'Catalogo completo'.")
+    if not (DATA_DIR / "pedidos_venda.csv").exists() or not (DATA_DIR / "itens_venda.csv").exists(): raise RuntimeError("pedidos_venda.csv/itens_venda.csv nao encontrado -- sem historico de vendas nao da pra calcular faturamento, capital parado nem a Sugestao de Compras direito (isso zeraria essas metricas no Atlas). Sincronize o modulo 'Pedidos de venda' pelo menos uma vez, ou use 'Tudo'/'Catalogo completo'.")
 
     print("\nCalculando indices (vendas, estoque, compras, lead time)...")
     idx = montar_indices(dados)
