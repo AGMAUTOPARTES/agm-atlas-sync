@@ -1067,11 +1067,45 @@ def salvar_snapshot_site(linhas, painel, dados):
         "produtosParados": painel["n_parados"], "produtosComprar": painel["n_a_comprar"], "leadTimeMedio": painel["lead_time"],
     }
 
-    # -------- Vendas diarias por produto (saida) para o grafico de movimentacao --------
+        # -------- Vendas diarias por produto (saida) para o grafico de movimentacao --------
     # Mesma regra de "venda valida" usada em vendas_30/60/90 (situacao nao
     # cancelada), mas calculada aqui de forma isolada -- nao reaproveita nem
     # altera pedidos_venda_map/vendas_30/60/90 em montar_indices, pra nao
     # arriscar quebrar nenhum numero que ja esta em producao.
+    #
+    # O codigo de um item de venda pode ser um codigo antigo/alias (produto
+    # trocou de codigo, ou o pedido foi lancado com o codigo velho). Sem
+    # resolver isso pro codigo ATUAL do produto -- o mesmo que vai em
+    # products[].code --, a venda fica gravada em product_daily_sales sob uma
+    # chave que /api/product-history nunca consulta (ele busca sempre pelo
+    # codigo atual), e o grafico mostra zero saidas mesmo com vendas reais.
+    # Resolve com a mesma logica de resolver_produto_id() de montar_indices,
+    # duplicada aqui (nao importada) pelo mesmo motivo de isolamento acima.
+    produtos_ids_diario = {r.get("produto_id") for r in dados["produtos"] if r.get("produto_id")}
+    codigo_atual_por_produto_id = {
+        r.get("produto_id"): (r.get("codigo") or "").strip()
+        for r in dados["produtos"] if r.get("produto_id") and (r.get("codigo") or "").strip()
+    }
+    produto_id_por_codigo_diario = {(r.get("codigo") or "").strip(): r.get("produto_id") for r in dados["produtos"] if (r.get("codigo") or "").strip()}
+    produto_id_por_codigo_antigo_diario = {(r.get("codigoAntigo") or "").strip(): r.get("produto_id") for r in dados["produtos"] if (r.get("codigoAntigo") or "").strip()}
+    de_para_diario = {}
+    for r in ler_csv("de_para_produtos.csv"):
+        antigo = (r.get("codigo_antigo") or "").strip()
+        atual = (r.get("codigo_atual") or "").strip()
+        if antigo and atual and atual in produto_id_por_codigo_diario:
+            de_para_diario[antigo] = produto_id_por_codigo_diario[atual]
+
+    def _resolver_codigo_atual_diario(item):
+        codigo_bruto = (item.get("codigo") or "").strip()
+        pid = item.get("produto_id")
+        if pid not in produtos_ids_diario:
+            pid = (
+                produto_id_por_codigo_diario.get(codigo_bruto)
+                or produto_id_por_codigo_antigo_diario.get(codigo_bruto)
+                or de_para_diario.get(codigo_bruto)
+            )
+        return codigo_atual_por_produto_id.get(pid) or codigo_bruto
+
     situacoes_map_vendas = {r["situacao_id"]: r["descricao"] for r in dados["situacoes"] if r.get("situacao_id")}
     def _venda_valida_diaria(situacao_id):
         return "cancelad" not in situacoes_map_vendas.get(situacao_id, "").lower()
@@ -1090,8 +1124,8 @@ def salvar_snapshot_site(linhas, painel, dados):
         info = pedidos_venda_map_diario.get(r.get("pedido_id"))
         if not info or not info["valido"] or not info["data"]:
             continue
-        codigo_item = (r.get("codigo") or "").strip()
-        if not codigo_item:
+        codigo_item = _resolver_codigo_atual_diario(r)
+      if not codigo_item:
             continue
         qtd = parse_float(r.get("quantidade"))
         if qtd <= 0:
