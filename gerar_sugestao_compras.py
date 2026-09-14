@@ -1111,6 +1111,7 @@ def salvar_snapshot_site(linhas, painel, dados):
 def main():
     print("Carregando dados sincronizados do Bling...")
     dados = carregar_dados()
+    if not dados["produtos"]: raise RuntimeError("produtos.csv vazio/nao encontrado -- sem catalogo nao da pra recalcular a Sugestao de Compras nem publicar no Atlas (isso apagaria os produtos do site). Sincronize o modulo 'Produtos (catalogo)' pelo menos uma vez, ou use 'Tudo'/'Catalogo completo'.")
 
     print("\nCalculando indices (vendas, estoque, compras, lead time)...")
     idx = montar_indices(dados)
