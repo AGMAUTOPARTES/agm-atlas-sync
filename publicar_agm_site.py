@@ -177,6 +177,17 @@ def main():
         print("  Vendas diarias enviadas: "+str(min(start+len(batch),len(daily_sales)))+"/"+str(len(daily_sales)))
     if daily_sales:
         print("  Dias com venda registrados: "+str(len(daily_sales)))
+    daily_sales_by_client=snapshot.get("dailySalesByClient") or []
+    # Mesmo padrao de lotes de dailySales acima (22/09/2026, drill-down por
+    # cliente no grafico financeiro) -- so leitura+upsert, sem cruzar pedidos
+    # em aberto, entao cabe um lote grande sem estourar o tempo do Worker.
+    daily_sales_by_client_batch_size=500
+    for start in range(0,len(daily_sales_by_client),daily_sales_by_client_batch_size):
+        batch=daily_sales_by_client[start:start+daily_sales_by_client_batch_size]
+        post({"action":"dailySalesByClient","entries":batch})
+        print("  Vendas diarias por cliente enviadas: "+str(min(start+len(batch),len(daily_sales_by_client)))+"/"+str(len(daily_sales_by_client)))
+    if daily_sales_by_client:
+        print("  Combinacoes dia+cliente registradas: "+str(len(daily_sales_by_client)))
     print("OK - ATLAS atualizado com "+str(result.get("publishedCount"))+" produtos em "+str(result.get("updatedAt")))
 
 if __name__=="__main__": main()

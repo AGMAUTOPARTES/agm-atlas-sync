@@ -1085,9 +1085,21 @@ def salvar_snapshot_site(linhas, painel, dados):
         pedidos_venda_map_diario[pid] = {
             "valido": _venda_valida_diaria(r.get("situacao_id", "")),
             "data": parse_date(r.get("data")),
+            # 22/09/2026 -- Jonas pediu pra poder clicar na parte verde (entradas)
+            # da vela do grafico financeiro e ver a lista de clientes daquele dia.
+            # contato_nome ja vem gravado em pedidos_venda.csv (PV_FIELDS, em
+            # sync_bling.py) -- nao precisou de nenhuma mudanca no sync_bling.py,
+            # so reaproveitar aqui o mesmo join por pedido_id que ja existe pra
+            # pegar a data de cada item vendido.
+            "cliente": (r.get("contato_nome") or "").strip() or "Cliente nao identificado",
         }
     vendas_diarias_qtd = defaultdict(float)
     vendas_diarias_valor = defaultdict(float)
+    # Agregacao gemea da de cima (por codigo+data), só que por cliente+data --
+    # mesmo loop, mesmo filtro de "venda valida", pra bater centavo a centavo
+    # com o total de "Entradas (Vendas)" que ja aparece no card por dia.
+    vendas_diarias_cliente_qtd = defaultdict(float)
+    vendas_diarias_cliente_valor = defaultdict(float)
     for r in dados["itens_venda"]:
         info = pedidos_venda_map_diario.get(r.get("pedido_id"))
         if not info or not info["valido"] or not info["data"]:
@@ -1102,9 +1114,16 @@ def salvar_snapshot_site(linhas, painel, dados):
         chave = (codigo_item, info["data"].isoformat())
         vendas_diarias_qtd[chave] += qtd
         vendas_diarias_valor[chave] += valor_real
+        chave_cliente = (info["data"].isoformat(), info["cliente"])
+        vendas_diarias_cliente_qtd[chave_cliente] += qtd
+        vendas_diarias_cliente_valor[chave_cliente] += valor_real
     daily_sales = [
         {"code": codigo, "date": data_iso, "quantity": round(qtd, 4), "revenue": round(vendas_diarias_valor[(codigo, data_iso)], 2)}
         for (codigo, data_iso), qtd in vendas_diarias_qtd.items()
+    ]
+    daily_sales_by_client = [
+        {"date": data_iso, "client": cliente, "quantity": round(qtd, 4), "revenue": round(vendas_diarias_cliente_valor[(data_iso, cliente)], 2)}
+        for (data_iso, cliente), qtd in vendas_diarias_cliente_qtd.items()
     ]
 
     itens_por_nota = defaultdict(list)
@@ -1141,6 +1160,7 @@ def salvar_snapshot_site(linhas, painel, dados):
         "schemaVersion": 2, "generatedAt": dt.datetime.now().isoformat(timespec="seconds"),
         "expectedCount": len(produtos), "checksum": hashlib.sha256(codigo_checksum.encode("utf-8")).hexdigest(),
         "summary": resumo, "products": produtos, "receipts": recebimentos, "dailySales": daily_sales,
+        "dailySalesByClient": daily_sales_by_client,
     }
     SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp = SNAPSHOT_PATH.with_suffix(".json.tmp")
